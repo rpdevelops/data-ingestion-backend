@@ -35,6 +35,13 @@ COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
 COGNITO_REGION=us-east-1
 ALLOWED_GROUP=uploader
 
+# AWS S3 (required for file uploads)
+CSV_BUCKET_NAME=my-csv-bucket
+AWS_REGION=us-east-1
+
+# AWS SQS (required for job processing)
+SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/job-queue
+
 # Logging (optional)
 LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_FORMAT=json         # json (for CloudWatch) or simple (for local dev)
@@ -70,6 +77,43 @@ Once running, access:
 ### Jobs
 
 - `GET /jobs` - Get all jobs (requires authentication, returns user's jobs by default)
+- `POST /jobs/upload` - Upload CSV file for processing (requires authentication + "uploader" group)
+
+#### Upload CSV File
+
+**Endpoint**: `POST /jobs/upload`
+
+**Authentication**: Required (JWT token + "uploader" group)
+
+**Request**: 
+- Content-Type: `multipart/form-data`
+- Body: CSV file (max 5MB)
+
+**Response**:
+```json
+{
+  "job_id": 123,
+  "message": "File 'contacts.csv' uploaded successfully and queued for processing",
+  "filename": "contacts.csv",
+  "total_rows": 150
+}
+```
+
+**Validations**:
+- File must be CSV format (.csv extension)
+- File size must be ≤ 5MB
+- File must not be empty
+- File must have data rows (not just header)
+- File must not have been previously imported (duplicate check)
+
+**Flow**:
+1. Validates JWT token and "uploader" group
+2. Validates CSV file (format, size, content)
+3. Checks for duplicate files
+4. Uploads file to S3
+5. Creates job record (status: PENDING)
+6. Publishes message to SQS queue
+7. Returns job information
 
 ## Authentication
 

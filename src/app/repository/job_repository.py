@@ -91,3 +91,136 @@ class JobRepository:
             query = query.filter(Job.job_user_id == user_id)
         
         return query.count()
+    
+    @staticmethod
+    def create_job(
+        db: Session,
+        user_id: str,
+        original_filename: str,
+        s3_object_key: str,
+        total_rows: int,
+        request_id: Optional[str] = None
+    ) -> Job:
+        """
+        Create a new job record.
+        
+        Args:
+            db: Database session
+            user_id: User ID from JWT token
+            original_filename: Original CSV filename
+            s3_object_key: S3 object key where file is stored
+            total_rows: Total number of rows in CSV
+            request_id: Request ID for logging traceability
+            
+        Returns:
+            Created Job object
+        """
+        from src.models.job import JobStatus
+        
+        job = Job(
+            job_user_id=user_id,
+            job_original_filename=original_filename,
+            job_s3_object_key=s3_object_key,
+            job_status=JobStatus.PENDING,
+            job_total_rows=total_rows,
+            job_processed_rows=0,
+            job_issue_count=0,
+        )
+        
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        
+        logger.info(
+            "Job created successfully",
+            extra={
+                "request_id": request_id,
+                "job_id": job.job_id,
+                "user_id": user_id,
+                "file_name": original_filename,
+                "total_rows": total_rows,
+            }
+        )
+        
+        return job
+    
+    @staticmethod
+    def check_duplicate_file(
+        db: Session,
+        user_id: str,
+        filename: str,
+        request_id: Optional[str] = None
+    ) -> bool:
+        """
+        Check if a file with the same name was already imported by this user.
+        
+        Args:
+            db: Database session
+            user_id: User ID
+            filename: Filename to check
+            request_id: Request ID for logging traceability
+            
+        Returns:
+            True if duplicate exists, False otherwise
+        """
+        existing_job = db.query(Job).filter(
+            Job.job_user_id == user_id,
+            Job.job_original_filename == filename
+        ).first()
+        
+        if existing_job:
+            logger.warning(
+                "Duplicate file detected",
+                extra={
+                    "request_id": request_id,
+                    "user_id": user_id,
+                    "file_name": filename,
+                    "existing_job_id": existing_job.job_id,
+                }
+            )
+            return True
+        
+        return False
+    
+    @staticmethod
+    def delete_job(
+        db: Session,
+        job_id: int,
+        request_id: Optional[str] = None
+    ) -> bool:
+        """
+        Delete a job record from database.
+        
+        Args:
+            db: Database session
+            job_id: Job ID to delete
+            request_id: Request ID for logging traceability
+            
+        Returns:
+            True if job was deleted, False if job not found
+        """
+        job = db.query(Job).filter(Job.job_id == job_id).first()
+        
+        if not job:
+            logger.warning(
+                "Job not found for deletion",
+                extra={
+                    "request_id": request_id,
+                    "job_id": job_id,
+                }
+            )
+            return False
+        
+        db.delete(job)
+        db.commit()
+        
+        logger.info(
+            "Job deleted successfully",
+            extra={
+                "request_id": request_id,
+                "job_id": job_id,
+                "user_id": job.job_user_id,
+            }
+        )
+        
+        return True
