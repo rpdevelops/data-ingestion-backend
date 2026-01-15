@@ -79,7 +79,30 @@ All API endpoints require AWS Cognito JWT authentication. The token must be prov
 Authorization: Bearer <jwt_token>
 ```
 
-For endpoints that require the `uploader` group, the user must belong to that Cognito group.
+### How Authentication Works
+
+Authentication is applied using FastAPI's `Depends()` mechanism:
+
+- **Authentication only**: `Depends(get_current_user)` - Requires valid JWT token
+- **Authentication + Group**: `Depends(require_group("uploader"))` - Requires token AND group membership
+
+### Quick Examples
+
+**Endpoint with authentication only:**
+```python
+@router.get("/jobs")
+def get_jobs(current_user: dict = Depends(get_current_user)):
+    # Any authenticated user can access
+    pass
+```
+
+**Endpoint requiring "uploader" group:**
+```python
+@router.post("/upload")
+def upload(current_user: dict = Depends(require_group("uploader"))):
+    # Only users in "uploader" group can access
+    pass
+```
 
 ## Logging
 

@@ -1,5 +1,9 @@
 """
 Jobs API endpoints.
+
+Authentication and Authorization:
+- All endpoints require authentication via JWT token (Depends(get_current_user))
+- Some endpoints require specific Cognito groups (Depends(require_group("uploader")))
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
@@ -17,11 +21,24 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
-@router.get("", response_model=JobListResponse, status_code=status.HTTP_200_OK)
+@router.get(
+    "",
+    response_model=JobListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get all jobs",
+    description="""
+    Get all jobs for the authenticated user.
+    
+    **Authentication**: Required (JWT token)
+    **Authorization**: No group required (any authenticated user can access their own jobs)
+    
+    Returns only jobs owned by the authenticated user (filtered by user_id from JWT token).
+    """
+)
 def get_all_jobs(
     request: Request,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user),  # ← AUTHENTICATION: Requires valid JWT token
     user_id: Optional[str] = None,
     debug: Optional[bool] = False,
 ):

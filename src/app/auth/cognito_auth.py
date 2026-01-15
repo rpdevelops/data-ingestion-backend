@@ -150,16 +150,37 @@ def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> dict:
     """
-    Dependency to get current authenticated user from JWT token.
+    Dependency function for FastAPI endpoints that require authentication.
+    
+    This function validates the JWT token and extracts user information.
+    Use this as a dependency in any endpoint that requires authentication.
+    
+    Usage in endpoints:
+        @router.get("/example")
+        def example_endpoint(
+            current_user: dict = Depends(get_current_user)  # ← Requires authentication
+        ):
+            # current_user contains: user_id, username, groups, email
+            ...
     
     Args:
-        credentials: HTTP Bearer token credentials
+        credentials: HTTP Bearer token credentials (automatically extracted from Authorization header)
         
     Returns:
-        User information from token payload
+        Dictionary with user information:
+        {
+            "user_id": str,      # Cognito user ID (sub claim)
+            "username": str,     # Username
+            "groups": list,      # Cognito groups (e.g., ["uploader"])
+            "email": str         # User email (if available)
+        }
         
     Raises:
-        HTTPException: If token is invalid or user is not authenticated
+        HTTPException 401: If token is missing, invalid, or expired
+        
+    Note:
+        This function only validates authentication, NOT authorization.
+        To require a specific group, use require_group() instead.
     """
     token = credentials.credentials
     payload = verify_token(token)
@@ -185,17 +206,46 @@ def get_current_user(
 
 def require_group(allowed_group: str = settings.ALLOWED_GROUP):
     """
-    Dependency factory to require a specific Cognito group.
+    Dependency factory to require a specific Cognito group for authorization.
+    
+    This function creates a dependency that validates both authentication AND
+    group membership. Use this for endpoints that require specific permissions.
+    
+    Usage in endpoints:
+        @router.post("/upload")
+        def upload_endpoint(
+            current_user: dict = Depends(require_group("uploader"))  # ← Requires "uploader" group
+        ):
+            # Only users in "uploader" group can access this
+            ...
     
     Args:
-        allowed_group: Required group name (default: "uploader")
+        allowed_group: Required Cognito group name (default: "uploader" from settings)
         
     Returns:
-        Dependency function that validates group membership
+        Dependency function that:
+        1. Validates JWT token (via get_current_user)
+        2. Checks if user belongs to the required group
+        3. Returns user info if authorized
+        
+    Raises:
+        HTTPException 401: If token is invalid (from get_current_user)
+        HTTPException 403: If user doesn't belong to required group
+        
+    Example:
+        # Use default group from settings
+        Depends(require_group())
+        
+        # Use custom group
+        Depends(require_group("admin"))
     """
     def group_checker(user: dict = Depends(get_current_user)) -> dict:
         """
         Verify user belongs to the required group.
+        
+        This is the actual dependency function that gets executed.
+        It first calls get_current_user() to validate authentication,
+        then checks group membership.
         
         Args:
             user: Current user from get_current_user dependency
@@ -204,7 +254,7 @@ def require_group(allowed_group: str = settings.ALLOWED_GROUP):
             User information if authorized
             
         Raises:
-            HTTPException: If user doesn't belong to required group
+            HTTPException 403: If user doesn't belong to required group
         """
         user_groups = user.get("groups", [])
         

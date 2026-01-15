@@ -32,6 +32,7 @@ ENV/
 *.swp
 *.swo
 *~
+docs/
 
 # Environment variables
 .env
