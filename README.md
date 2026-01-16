@@ -79,6 +79,11 @@ Once running, access:
 - `GET /jobs` - Get all jobs (requires authentication, returns user's jobs by default)
 - `POST /jobs/upload` - Upload CSV file for processing (requires authentication + "uploader" group)
 
+### Issues
+
+- `GET /issues` - Get all issues for all user's jobs with related staging rows (requires authentication)
+- `GET /issues/job/{job_id}` - Get all issues for a specific job with related staging rows (requires authentication)
+
 #### Upload CSV File
 
 **Endpoint**: `POST /jobs/upload`
@@ -114,6 +119,97 @@ Once running, access:
 5. Creates job record (status: PENDING)
 6. Publishes message to SQS queue
 7. Returns job information
+
+#### Get All User Issues
+
+**Endpoint**: `GET /issues`
+
+**Authentication**: Required (JWT token only, no group required)
+
+**Response**:
+```json
+{
+  "issues": [
+    {
+      "issue_id": 1,
+      "issues_job_id": 5,
+      "issue_type": "DUPLICATE_EMAIL",
+      "issue_resolved": false,
+      "issue_description": "Email appears multiple times with different identities",
+      "issue_resolved_at": null,
+      "issue_resolved_by": null,
+      "issue_resolution_comment": null,
+      "issue_created_at": "2026-01-15T21:50:07Z",
+      "affected_rows": [
+        {
+          "staging_id": 123,
+          "staging_email": "test@example.com",
+          "staging_first_name": "John",
+          "staging_last_name": "Doe",
+          "staging_company": "Company A",
+          "staging_created_at": "2026-01-15T21:50:07Z",
+          "staging_status": "ISSUE"
+        }
+      ]
+    }
+  ],
+  "total": 1,
+  "resolved_count": 0,
+  "unresolved_count": 1
+}
+```
+
+**Features**:
+- Returns all issues from all jobs belonging to the authenticated user
+- Returns issues with related staging rows (join via issue_items)
+- Excludes `staging_row_hash` and `issue_key` (used only for idempotency)
+- Includes counts: total, resolved, and unresolved issues across all user's jobs
+- Issues are ordered by creation date (newest first)
+
+#### Get Job Issues
+
+**Endpoint**: `GET /issues/job/{job_id}`
+
+**Authentication**: Required (JWT token only, no group required)
+
+**Response**:
+```json
+{
+  "issues": [
+    {
+      "issue_id": 1,
+      "issues_job_id": 5,
+      "issue_type": "DUPLICATE_EMAIL",
+      "issue_resolved": false,
+      "issue_description": "Email appears multiple times with different identities",
+      "issue_resolved_at": null,
+      "issue_resolved_by": null,
+      "issue_resolution_comment": null,
+      "issue_created_at": "2026-01-15T21:50:07Z",
+      "affected_rows": [
+        {
+          "staging_id": 123,
+          "staging_email": "test@example.com",
+          "staging_first_name": "John",
+          "staging_last_name": "Doe",
+          "staging_company": "Company A",
+          "staging_created_at": "2026-01-15T21:50:07Z",
+          "staging_status": "ISSUE"
+        }
+      ]
+    }
+  ],
+  "total": 1,
+  "resolved_count": 0,
+  "unresolved_count": 1
+}
+```
+
+**Features**:
+- Returns issues with related staging rows (join via issue_items)
+- Excludes `staging_row_hash` and `issue_key` (used only for idempotency)
+- Includes counts: total, resolved, and unresolved issues
+- Only returns issues for jobs owned by the authenticated user
 
 ## Authentication
 

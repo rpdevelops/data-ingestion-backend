@@ -241,16 +241,16 @@ async def upload_csv(
             )
         
         # Step 5: Create job record in database
-            logger.info(
-                "Creating job record",
-                extra={
-                    "request_id": request_id,
-                    "user_id": user_id,
-                    "file_name": file.filename,
-                    "s3_key": s3_key,
-                    "total_rows": total_rows,
-                }
-            )
+        logger.info(
+            "Creating job record",
+            extra={
+                "request_id": request_id,
+                "user_id": user_id,
+                "file_name": file.filename,
+                "s3_key": s3_key,
+                "total_rows": total_rows,
+            }
+        )
         
         try:
             job = JobRepository.create_job(
@@ -369,7 +369,7 @@ async def upload_csv(
                     )
                 )
         
-        # Step 7: Return success response
+        # Step 7: Return success response (only reached if SQS publish succeeds)
         logger.info(
             "CSV upload completed successfully",
             extra={
@@ -387,7 +387,6 @@ async def upload_csv(
             filename=file.filename,
             total_rows=total_rows,
         )
-        
     except HTTPException:
         # Re-raise HTTP exceptions (validation errors, etc.)
         raise
