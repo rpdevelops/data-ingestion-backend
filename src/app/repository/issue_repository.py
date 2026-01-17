@@ -194,3 +194,134 @@ class IssueRepository:
         unresolved = total - resolved
         
         return (total, resolved, unresolved)
+    
+    @staticmethod
+    def get_issue_by_id(
+        db: Session,
+        issue_id: int,
+        user_id: str,
+        request_id: Optional[str] = None
+    ) -> Optional[Issue]:
+        """
+        Get a specific issue by ID, with related staging rows.
+        Verifies that the issue belongs to a job owned by the user.
+        
+        Args:
+            db: Database session
+            issue_id: Issue ID
+            user_id: User ID to verify job ownership
+            request_id: Request ID for logging traceability
+            
+        Returns:
+            Issue object with loaded relationships, or None if not found or access denied
+        """
+        from src.models.job import Job
+        
+        # Get issue with job join to verify ownership
+        issue = (
+            db.query(Issue)
+            .join(Job, Issue.issues_job_id == Job.job_id)
+            .filter(
+                Issue.issue_id == issue_id,
+                Job.job_user_id == user_id
+            )
+            .options(
+                # Eagerly load issue_items and their staging relationships
+                joinedload(Issue.issue_items).joinedload(IssueItem.staging)
+            )
+            .first()
+        )
+        
+        if not issue:
+            logger.warning(
+                "Issue not found or access denied",
+                extra={
+                    "request_id": request_id,
+                    "issue_id": issue_id,
+                    "user_id": user_id,
+                }
+            )
+            return None
+        
+        logger.debug(
+            "Issue query completed",
+            extra={
+                "request_id": request_id,
+                "issue_id": issue_id,
+                "user_id": user_id,
+            }
+        )
+        
+        return issue
+    
+    @staticmethod
+    def update_issue(
+        db: Session,
+        issue_id: int,
+        user_id: str,
+        resolved: Optional[bool] = None,
+        description: Optional[str] = None,
+        resolved_by: Optional[str] = None,
+        resolution_comment: Optional[str] = None,
+        request_id: Optional[str] = None
+    ) -> Optional[Issue]:
+        """
+        Update an issue record.
+        Verifies that the issue belongs to a job owned by the user.
+        
+        Args:
+            db: Database session
+            issue_id: Issue ID
+            user_id: User ID to verify job ownership
+            resolved: Optional resolved status to update
+            description: Optional description to update
+            resolved_by: Optional user who resolved the issue
+            resolution_comment: Optional resolution comment
+            request_id: Request ID for logging traceability
+            
+        Returns:
+            Updated Issue object, or None if not found or access denied
+        """
+        from datetime import datetime
+        
+        # Get issue and verify ownership
+        issue = IssueRepository.get_issue_by_id(db, issue_id, user_id, request_id)
+        if not issue:
+            return None
+        
+        # Update only provided fields
+        if resolved is not None:
+            issue.issue_resolved = resolved
+            # If resolving, set resolved_at if not already set
+            if resolved and not issue.issue_resolved_at:
+                issue.issue_resolved_at = datetime.utcnow()
+            # If unresolving, clear resolved_at and resolved_by
+            elif not resolved:
+                issue.issue_resolved_at = None
+                issue.issue_resolved_by = None
+        
+        if description is not None:
+            issue.issue_description = description
+        
+        if resolved_by is not None:
+            issue.issue_resolved_by = resolved_by
+            # If resolving and resolved_at not set, set it
+            if issue.issue_resolved and not issue.issue_resolved_at:
+                issue.issue_resolved_at = datetime.utcnow()
+        
+        if resolution_comment is not None:
+            issue.issue_resolution_comment = resolution_comment
+        
+        db.commit()
+        db.refresh(issue)
+        
+        logger.info(
+            "Issue updated successfully",
+            extra={
+                "request_id": request_id,
+                "issue_id": issue_id,
+                "user_id": user_id,
+            }
+        )
+        
+        return issue

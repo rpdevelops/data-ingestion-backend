@@ -33,3 +33,10 @@ class JobListResponse(BaseModel):
     """Response schema for list of jobs."""
     jobs: list[JobResponse]
     total: int
+
+
+class JobReprocessResponse(BaseModel):
+    """Response schema for job reprocess."""
+    job_id: int
+    message: str
+    s3_key: str

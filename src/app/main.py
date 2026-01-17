@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.settings import settings
-from src.app.api import jobs, issues
+from src.app.api import jobs, issues, staging, contacts
 from src.app.logging_config import setup_logging
 from src.app.middleware.logging_middleware import LoggingMiddleware
 
@@ -33,6 +33,8 @@ app.add_middleware(
 # Include routers
 app.include_router(jobs.router)
 app.include_router(issues.router)
+app.include_router(staging.router)
+app.include_router(contacts.router)
 
 
 @app.get("/health")

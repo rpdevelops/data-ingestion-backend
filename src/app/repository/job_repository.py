@@ -224,3 +224,61 @@ class JobRepository:
         )
         
         return True
+    
+    @staticmethod
+    def can_delete_job(
+        db: Session,
+        job_id: int,
+        user_id: str,
+        request_id: Optional[str] = None
+    ) -> tuple[bool, Optional[Job], Optional[str]]:
+        """
+        Check if a job can be deleted (verifies ownership and status).
+        
+        Args:
+            db: Database session
+            job_id: Job ID to check
+            user_id: User ID to verify ownership
+            request_id: Request ID for logging traceability
+            
+        Returns:
+            Tuple of (can_delete: bool, job: Optional[Job], error_message: Optional[str])
+            - If can_delete is True, job is returned and error_message is None
+            - If can_delete is False, job may be None or the job object, and error_message explains why
+        """
+        from src.models.job import JobStatus
+        
+        # Get job and verify ownership
+        job = JobRepository.get_job_by_id(db, job_id, user_id)
+        
+        if not job:
+            logger.warning(
+                "Job not found or access denied",
+                extra={
+                    "request_id": request_id,
+                    "job_id": job_id,
+                    "user_id": user_id,
+                }
+            )
+            return (False, None, "Job not found or you don't have access to it")
+        
+        # Check if job status allows deletion
+        allowed_statuses = [JobStatus.PENDING, JobStatus.NEEDS_REVIEW, JobStatus.FAILED]
+        if job.job_status not in allowed_statuses:
+            logger.warning(
+                "Job cannot be deleted: invalid status",
+                extra={
+                    "request_id": request_id,
+                    "job_id": job_id,
+                    "user_id": user_id,
+                    "current_status": job.job_status.value,
+                    "allowed_statuses": [s.value for s in allowed_statuses],
+                }
+            )
+            return (
+                False,
+                job,
+                f"Job can only be cancelled if status is PENDING, NEEDS_REVIEW, or FAILED. Current status: {job.job_status.value}"
+            )
+        
+        return (True, job, None)

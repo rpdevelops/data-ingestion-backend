@@ -44,3 +44,14 @@ class IssueListResponse(BaseModel):
     total: int
     resolved_count: int
     unresolved_count: int
+
+
+class IssueUpdateRequest(BaseModel):
+    """Request schema for updating an issue."""
+    issue_resolved: Optional[bool] = Field(None, description="Whether the issue is resolved")
+    issue_description: Optional[str] = Field(None, description="Issue description")
+    issue_resolved_by: Optional[str] = Field(None, description="User who resolved the issue")
+    issue_resolution_comment: Optional[str] = Field(None, description="Resolution comment")
+    
+    class Config:
+        from_attributes = True

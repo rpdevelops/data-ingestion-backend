@@ -78,11 +78,24 @@ Once running, access:
 
 - `GET /jobs` - Get all jobs (requires authentication, returns user's jobs by default)
 - `POST /jobs/upload` - Upload CSV file for processing (requires authentication + "uploader" group)
+- `POST /jobs/{job_id}/reprocess` - Reprocess a job by sending message to SQS (requires authentication + "uploader" group)
+- `DELETE /jobs/{job_id}` - Cancel/delete a job and all related data (requires authentication + "editor" group)
 
 ### Issues
 
 - `GET /issues` - Get all issues for all user's jobs with related staging rows (requires authentication)
 - `GET /issues/job/{job_id}` - Get all issues for a specific job with related staging rows (requires authentication)
+- `GET /issues/{issue_id}` - Get detailed information about a specific issue with all related staging rows (requires authentication)
+- `PUT /issues/{issue_id}` - Update an issue (requires authentication + "editor" group)
+
+### Staging
+
+- `PUT /staging/{staging_id}` - Update a staging record (requires authentication + "editor" group)
+
+### Contacts
+
+- `GET /contacts` - Get all contacts for the authenticated user (requires authentication, filtered by contacts_user_id from token)
+- `GET /contacts?email={email}` - Get a specific contact by email address (requires authentication, filtered by contacts_user_id from token)
 
 #### Upload CSV File
 
@@ -119,6 +132,56 @@ Once running, access:
 5. Creates job record (status: PENDING)
 6. Publishes message to SQS queue
 7. Returns job information
+
+#### Reprocess Job
+
+**Endpoint**: `POST /jobs/{job_id}/reprocess`
+
+**Authentication**: Required (JWT token + "uploader" group)
+
+**Response**:
+```json
+{
+  "job_id": 123,
+  "message": "Job 123 queued for reprocessing",
+  "s3_key": "uploads/user-id-123/contacts.csv"
+}
+```
+
+**Features**:
+- Sends the same message format to SQS that is sent during CSV upload
+- Verifies that the job belongs to the authenticated user
+- Uses the existing S3 key from the job record
+- Returns 404 if job not found or user doesn't have access
+- Returns 503 if SQS message publishing fails
+- Allows reprocessing of existing jobs without re-uploading the CSV file
+
+#### Cancel/Delete Job
+
+**Endpoint**: `DELETE /jobs/{job_id}`
+
+**Authentication**: Required (JWT token + "editor" group)
+
+**Response**:
+```json
+{
+  "message": "Job 123 cancelled successfully",
+  "job_id": 123
+}
+```
+
+**Features**:
+- Only jobs with status PENDING, NEEDS_REVIEW, or FAILED can be cancelled
+- Deletes all related data via CASCADE:
+  - All staging records related to the job
+  - All issue_items related to the job
+  - All issues related to the job
+- Deletes the job record from database
+- Deletes the CSV file from S3 bucket
+- Verifies that the job belongs to the authenticated user
+- Returns 404 if job not found or user doesn't have access
+- Returns 400 if job status doesn't allow deletion (PROCESSING or COMPLETED)
+- Returns 403 if user doesn't belong to "editor" group
 
 #### Get All User Issues
 
@@ -210,6 +273,206 @@ Once running, access:
 - Excludes `staging_row_hash` and `issue_key` (used only for idempotency)
 - Includes counts: total, resolved, and unresolved issues
 - Only returns issues for jobs owned by the authenticated user
+
+#### Get Issue Details
+
+**Endpoint**: `GET /issues/{issue_id}`
+
+**Authentication**: Required (JWT token only, no group required)
+
+**Response**:
+```json
+{
+  "issue_id": 1,
+  "issues_job_id": 5,
+  "issue_type": "DUPLICATE_EMAIL",
+  "issue_resolved": false,
+  "issue_description": "Email appears multiple times with different identities",
+  "issue_resolved_at": null,
+  "issue_resolved_by": null,
+  "issue_resolution_comment": null,
+  "issue_created_at": "2026-01-15T21:50:07Z",
+  "affected_rows": [
+    {
+      "staging_id": 123,
+      "staging_email": "test@example.com",
+      "staging_first_name": "John",
+      "staging_last_name": "Doe",
+      "staging_company": "Company A",
+      "staging_created_at": "2026-01-15T21:50:07Z",
+      "staging_status": "ISSUE"
+    },
+    {
+      "staging_id": 124,
+      "staging_email": "test@example.com",
+      "staging_first_name": "Jane",
+      "staging_last_name": "Smith",
+      "staging_company": "Company B",
+      "staging_created_at": "2026-01-15T21:50:08Z",
+      "staging_status": "ISSUE"
+    }
+  ]
+}
+```
+
+**Features**:
+- Returns complete issue information (all fields except `issue_key`)
+- Returns all related staging rows (complete records except `staging_row_hash`)
+- Verifies that the issue belongs to a job owned by the authenticated user
+- Returns 404 if issue not found or user doesn't have access
+
+#### Update Issue
+
+**Endpoint**: `PUT /issues/{issue_id}`
+
+**Authentication**: Required (JWT token + "editor" group)
+
+**Request Body**:
+```json
+{
+  "issue_resolved": true,
+  "issue_description": "Updated description",
+  "issue_resolved_by": "user-id-123",
+  "issue_resolution_comment": "Issue resolved after manual review"
+}
+```
+
+**Response**:
+```json
+{
+  "issue_id": 1,
+  "issues_job_id": 5,
+  "issue_type": "DUPLICATE_EMAIL",
+  "issue_resolved": true,
+  "issue_description": "Updated description",
+  "issue_resolved_at": "2026-01-15T22:00:00Z",
+  "issue_resolved_by": "user-id-123",
+  "issue_resolution_comment": "Issue resolved after manual review",
+  "issue_created_at": "2026-01-15T21:50:07Z",
+  "affected_rows": [...]
+}
+```
+
+**Features**:
+- Updates only the fields provided in the request body
+- Fields not included in the request remain unchanged
+- When resolving an issue (`issue_resolved=true`):
+  - `issue_resolved_at` is automatically set to current timestamp if not already set
+  - If `issue_resolved_by` is not provided, it defaults to the authenticated user's ID
+- When unresolving an issue (`issue_resolved=false`):
+  - `issue_resolved_at` and `issue_resolved_by` are automatically cleared
+- Verifies that the issue belongs to a job owned by the authenticated user
+- Returns 404 if issue not found or user doesn't have access
+- Returns 403 if user doesn't belong to "editor" group
+- Returns updated issue with all related staging rows (excluding `staging_row_hash` and `issue_key`)
+
+## Staging
+
+### Update Staging Record
+
+**Endpoint**: `PUT /staging/{staging_id}`
+
+**Authentication**: Required (JWT token + "editor" group)
+
+**Request Body**:
+```json
+{
+  "staging_email": "updated@example.com",
+  "staging_first_name": "John",
+  "staging_last_name": "Doe",
+  "staging_company": "Updated Company",
+  "staging_status": "READY"
+}
+```
+
+**Response**:
+```json
+{
+  "staging_id": 123,
+  "staging_job_id": 5,
+  "staging_email": "updated@example.com",
+  "staging_first_name": "John",
+  "staging_last_name": "Doe",
+  "staging_company": "Updated Company",
+  "staging_created_at": "2026-01-15T21:50:07Z",
+  "staging_status": "READY"
+}
+```
+
+**Features**:
+- Updates only the fields provided in the request body
+- Fields not included in the request remain unchanged
+- Verifies that the staging belongs to a job owned by the authenticated user
+- Returns 404 if staging not found or user doesn't have access
+- Returns updated staging record (excluding `staging_row_hash`)
+- All fields are optional in the request (partial updates supported)
+
+## Contacts
+
+### Get All Contacts
+
+**Endpoint**: `GET /contacts`
+
+**Authentication**: Required (JWT token only, no group required)
+
+**Response**:
+```json
+{
+  "contacts": [
+    {
+      "contact_id": 1,
+      "staging_id": 123,
+      "contacts_user_id": "13240852-1021-70eb-a720-347831bb8bec",
+      "contact_email": "john.doe@example.com",
+      "contact_first_name": "John",
+      "contact_last_name": "Doe",
+      "contact_company": "Company A",
+      "contact_created_at": "2026-01-15T21:50:07Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+**Features**:
+- Returns all contacts for the authenticated user (filtered by contacts_user_id from JWT token)
+- Contacts are ordered by creation date (newest first)
+- Filters directly on contacts_user_id field (no joins needed)
+- Automatically uses user_id from JWT token
+
+### Get Contact by Email
+
+**Endpoint**: `GET /contacts?email={email}`
+
+**Authentication**: Required (JWT token only, no group required)
+
+**Query Parameters**:
+- `email` (optional): Email address to search for
+
+**Response** (when email is provided):
+```json
+{
+  "contacts": [
+    {
+      "contact_id": 1,
+      "staging_id": 123,
+      "contacts_user_id": "13240852-1021-70eb-a720-347831bb8bec",
+      "contact_email": "john.doe@example.com",
+      "contact_first_name": "John",
+      "contact_last_name": "Doe",
+      "contact_company": "Company A",
+      "contact_created_at": "2026-01-15T21:50:07Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+**Features**:
+- If email parameter is provided, returns only the contact matching that email
+- If email parameter is not provided, returns all contacts (same as GET /contacts)
+- Filters by contacts_user_id from JWT token (no joins needed)
+- Returns 404 if contact with email not found or user doesn't have access
 
 ## Authentication
 

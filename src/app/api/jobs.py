@@ -12,7 +12,7 @@ from typing import Optional
 from src.app.db.database import get_db
 from src.app.auth.cognito_auth import get_current_user, require_group
 from src.app.repository.job_repository import JobRepository
-from src.schemas.job import JobResponse, JobListResponse
+from src.schemas.job import JobResponse, JobListResponse, JobReprocessResponse
 from src.schemas.upload import UploadResponse, UploadErrorResponse
 from src.app.services.csv_validator import csv_validator
 from src.app.services.s3_service import s3_service
@@ -44,64 +44,42 @@ def get_all_jobs(
     request: Request,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),  # ← AUTHENTICATION: Requires valid JWT token
-    user_id: Optional[str] = None,
-    debug: Optional[bool] = False,
 ):
     """
-    Get all jobs.
+    Get all jobs for the authenticated user.
     
-    If user_id query parameter is provided, filters jobs by that user.
-    Otherwise, returns all jobs (user can only see their own jobs by default).
+    Filters jobs by user_id from JWT token.
     
     Args:
         request: FastAPI request object (for request_id)
         db: Database session
         current_user: Current authenticated user
-        user_id: Optional user ID filter (defaults to current user)
-        debug: If true, returns debug information and all jobs (for testing)
         
     Returns:
         List of jobs with total count
     """
     request_id = getattr(request.state, "request_id", None)
-    filter_user_id = user_id if user_id == current_user["user_id"] else current_user["user_id"]
+    user_id = current_user["user_id"]
     
     # Log request with structured data
     logger.info(
         "Fetching jobs",
         extra={
             "request_id": request_id,
-            "user_id": current_user["user_id"],
-            "filter_user_id": filter_user_id,
-            "debug_mode": debug,
+            "user_id": user_id,
         }
     )
     
-    # Debug mode: return all jobs and show what user_id is being used
-    if debug:
-        logger.debug(
-            "Debug mode enabled",
-            extra={
-                "request_id": request_id,
-                "filter_user_id": filter_user_id,
-            }
-        )
-        all_jobs = JobRepository.get_all_jobs(db, user_id=None)
-        logger.debug(
-            f"Total jobs in DB: {len(all_jobs)}",
-            extra={"request_id": request_id}
-        )
-    
     # Get all jobs for the user
-    jobs = JobRepository.get_all_jobs(db, user_id=filter_user_id, request_id=request_id)
-    total = JobRepository.count_jobs(db, user_id=filter_user_id)
+    jobs = JobRepository.get_all_jobs(db, user_id=user_id, request_id=request_id)
+    total = JobRepository.count_jobs(db, user_id=user_id)
     
     # Log response with structured data
     logger.info(
         "Jobs fetched successfully",
         extra={
             "request_id": request_id,
-            "user_id": filter_user_id,
+            "user_id": user_id,
             "job_count": total,
         }
     )
@@ -405,3 +383,283 @@ async def upload_csv(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An unexpected error occurred: {str(e)}"
         )
+
+
+@router.post(
+    "/{job_id}/reprocess",
+    response_model=JobReprocessResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Reprocess a job",
+    description="""
+    Reprocess a job by sending a message to the SQS queue.
+    
+    **Authentication**: Required (JWT token)
+    **Authorization**: Requires "uploader" group
+    
+    Sends the same message to SQS that is sent during CSV upload, allowing the worker to reprocess the job.
+    """
+)
+def reprocess_job(
+    request: Request,
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_group("uploader")),  # ← Requires "uploader" group
+):
+    """
+    Reprocess a job by sending a message to the SQS queue.
+    
+    This endpoint sends the same message format to SQS that is sent during CSV upload,
+    allowing the worker to reprocess an existing job.
+    
+    Args:
+        request: FastAPI request object (for request_id)
+        job_id: Job ID to reprocess
+        db: Database session
+        current_user: Current authenticated user
+        
+    Returns:
+        JobReprocessResponse with job_id, message, and s3_key
+        
+    Raises:
+        HTTPException 404: If job not found or user doesn't have access
+        HTTPException 401: If authentication fails
+        HTTPException 403: If user doesn't belong to "uploader" group
+        HTTPException 503: If SQS message publishing fails
+    """
+    request_id = getattr(request.state, "request_id", None)
+    user_id = current_user["user_id"]
+    
+    logger.info(
+        "Reprocessing job request received",
+        extra={
+            "request_id": request_id,
+            "job_id": job_id,
+            "user_id": user_id,
+        }
+    )
+    
+    # Verify job exists and belongs to user
+    job = JobRepository.get_job_by_id(db, job_id, user_id)
+    if not job:
+        logger.warning(
+            "Job not found or access denied",
+            extra={
+                "request_id": request_id,
+                "job_id": job_id,
+                "user_id": user_id,
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found or you don't have access to it"
+        )
+    
+    # Get S3 key from job
+    s3_key = job.job_s3_object_key
+    
+    # Publish message to SQS queue (same format as upload)
+    logger.info(
+        "Publishing reprocess message to SQS",
+        extra={
+            "request_id": request_id,
+            "job_id": job_id,
+            "s3_key": s3_key,
+        }
+    )
+    
+    try:
+        sqs_service.publish_job_message(
+            job_id=job_id,
+            s3_key=s3_key
+        )
+    except Exception as e:
+        error_message = str(e)
+        logger.error(
+            "SQS publish failed during reprocess",
+            extra={
+                "request_id": request_id,
+                "job_id": job_id,
+                "s3_key": s3_key,
+                "error": error_message,
+            },
+            exc_info=True
+        )
+        
+        # Raise HTTPException to inform the user
+        if "does not exist" in error_message or "NonExistentQueue" in error_message:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"SQS queue does not exist. "
+                    f"Please create the SQS queue or fix SQS_QUEUE_URL environment variable."
+                )
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Failed to publish message to SQS queue. Error: {error_message}"
+            )
+    
+    logger.info(
+        "Job reprocessed successfully",
+        extra={
+            "request_id": request_id,
+            "job_id": job_id,
+            "user_id": user_id,
+            "s3_key": s3_key,
+        }
+    )
+    
+    return JobReprocessResponse(
+        job_id=job_id,
+        message=f"Job {job_id} queued for reprocessing",
+        s3_key=s3_key,
+    )
+
+
+@router.delete(
+    "/{job_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Cancel/delete a job",
+    description="""
+    Cancel and delete a job, removing all related data (staging, issues, issue_items) and the S3 file.
+    
+    **Authentication**: Required (JWT token)
+    **Authorization**: Requires "editor" group
+    
+    **Allowed statuses**: Job can only be cancelled if status is PENDING, NEEDS_REVIEW, or FAILED.
+    
+    This operation will:
+    1. Delete all staging records related to the job (CASCADE)
+    2. Delete all issue_items related to the job (CASCADE)
+    3. Delete all issues related to the job (CASCADE)
+    4. Delete the job record
+    5. Delete the CSV file from S3 bucket
+    """
+)
+def cancel_job(
+    request: Request,
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_group("editor")),  # ← Requires "editor" group
+):
+    """
+    Cancel and delete a job, removing all related data and the S3 file.
+    
+    Only jobs with status PENDING, NEEDS_REVIEW, or FAILED can be cancelled.
+    Related records (staging, issues, issue_items) are deleted via CASCADE.
+    
+    Args:
+        request: FastAPI request object (for request_id)
+        job_id: Job ID to cancel/delete
+        db: Database session
+        current_user: Current authenticated user
+        
+    Returns:
+        Success message with job_id
+        
+    Raises:
+        HTTPException 404: If job not found or user doesn't have access
+        HTTPException 400: If job status doesn't allow deletion (PROCESSING or COMPLETED)
+        HTTPException 401: If authentication fails
+        HTTPException 403: If user doesn't belong to "editor" group
+        HTTPException 500: If deletion fails
+    """
+    request_id = getattr(request.state, "request_id", None)
+    user_id = current_user["user_id"]
+    
+    logger.info(
+        "Cancelling job request received",
+        extra={
+            "request_id": request_id,
+            "job_id": job_id,
+            "user_id": user_id,
+        }
+    )
+    
+    # Verify job can be deleted (ownership and status check)
+    can_delete, job, error_message = JobRepository.can_delete_job(db, job_id, user_id, request_id)
+    
+    if not can_delete:
+        if job is None:
+            # Job not found or access denied
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=error_message
+            )
+        else:
+            # Job found but status doesn't allow deletion
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_message
+            )
+    
+    # Get S3 key before deleting job
+    s3_key = job.job_s3_object_key
+    
+    # Step 1: Delete job from database (CASCADE will delete staging, issues, issue_items)
+    try:
+        JobRepository.delete_job(db, job_id, request_id)
+        logger.info(
+            "Job deleted from database",
+            extra={
+                "request_id": request_id,
+                "job_id": job_id,
+                "user_id": user_id,
+            }
+        )
+    except Exception as e:
+        logger.error(
+            "Failed to delete job from database",
+            extra={
+                "request_id": request_id,
+                "job_id": job_id,
+                "user_id": user_id,
+                "error": str(e),
+            },
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete job from database: {str(e)}"
+        )
+    
+    # Step 2: Delete file from S3
+    try:
+        s3_service.delete_file(s3_key)
+        logger.info(
+            "S3 file deleted successfully",
+            extra={
+                "request_id": request_id,
+                "job_id": job_id,
+                "s3_key": s3_key,
+            }
+        )
+    except Exception as e:
+        # Log error but don't fail the request - job is already deleted
+        logger.error(
+            "Failed to delete S3 file (job already deleted)",
+            extra={
+                "request_id": request_id,
+                "job_id": job_id,
+                "s3_key": s3_key,
+                "error": str(e),
+            },
+            exc_info=True
+        )
+        # Continue - job is deleted, S3 cleanup can be done manually if needed
+    
+    logger.info(
+        "Job cancelled successfully",
+        extra={
+            "request_id": request_id,
+            "job_id": job_id,
+            "user_id": user_id,
+            "s3_key": s3_key,
+        }
+    )
+    
+    return {
+        "message": f"Job {job_id} cancelled successfully",
+        "job_id": job_id,
+    }
