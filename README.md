@@ -122,16 +122,27 @@ Once running, access:
 - File size must be ≤ 5MB
 - File must not be empty
 - File must have data rows (not just header)
+- **CSV must contain required headers**: `email`, `first_name`, `last_name`, `company`
+  - Header validation is case-insensitive and supports variations:
+    - `email`: email, e-mail, e_mail, email_address
+    - `first_name`: first_name, firstname, first name, nome, fname
+    - `last_name`: last_name, lastname, last name, sobrenome, lname
+    - `company`: company, empresa, organization, org, company_name
+  - The validation automatically tries multiple encodings (UTF-8, Latin-1, CP1252, ISO-8859-1, Windows-1252) and delimiters (semicolon, comma, tab) to handle different CSV formats
 - File must not have been previously imported (duplicate check)
 
 **Flow**:
 1. Validates JWT token and "uploader" group
-2. Validates CSV file (format, size, content)
+2. Validates CSV file (format, size, headers, content)
 3. Checks for duplicate files
-4. Uploads file to S3
+4. Uploads file to S3 (only if all validations pass)
 5. Creates job record (status: PENDING)
-6. Publishes message to SQS queue
+6. Publishes message to SQS queue (only if all validations pass)
 7. Returns job information
+
+**Error Handling**:
+- If CSV headers are missing or invalid, the upload is rejected with HTTP 400 before any file is uploaded to S3 or message is sent to SQS
+- Error messages include which headers are missing and which headers were found in the file
 
 #### Reprocess Job
 

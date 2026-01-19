@@ -104,11 +104,15 @@ def get_all_jobs(
     This endpoint:
     1. Validates JWT token and user group
     2. Validates CSV file (format, size < 5MB, not empty, has data)
-    3. Checks for duplicate files
-    4. Uploads file to S3
-    5. Creates job record in database
-    6. Publishes message to SQS queue for worker processing
-    7. Returns job ID and file information
+    3. **Validates CSV headers** (required: email, first_name, last_name, company)
+       - Header validation is case-insensitive and supports variations (e.g., "nome" for first_name, "empresa" for company)
+       - Automatically tries multiple encodings (UTF-8, Latin-1, CP1252, ISO-8859-1, Windows-1252) and delimiters (semicolon, comma, tab)
+       - If headers are missing, upload is rejected before S3 upload or SQS message
+    4. Checks for duplicate files
+    5. Uploads file to S3 (only if all validations pass)
+    6. Creates job record in database
+    7. Publishes message to SQS queue for worker processing
+    8. Returns job ID and file information
     """
 )
 async def upload_csv(
@@ -122,11 +126,27 @@ async def upload_csv(
     
     This endpoint follows the upload flow specified in AGENT.md:
     1. Validate JWT token and verify IAM role (uploader)
-    2. Pre-validate CSV file (format, size, duplicate check, empty check)
-    3. Upload CSV to S3 private bucket
+    2. Pre-validate CSV file (format, size, headers, duplicate check, empty check)
+    3. Upload CSV to S3 private bucket (only if all validations pass)
     4. Create job record in jobs table (status: PENDING)
-    5. Publish message to SQS queue
+    5. Publish message to SQS queue (only if all validations pass)
     6. Return job_id to frontend
+    
+    **CSV Header Validation**:
+    The CSV file must contain the following required headers (case-insensitive):
+    - `email` (variations: email, e-mail, e_mail, email_address)
+    - `first_name` (variations: first_name, firstname, first name, nome, fname)
+    - `last_name` (variations: last_name, lastname, last name, sobrenome, lname)
+    - `company` (variations: company, empresa, organization, org, company_name)
+    
+    The validation automatically handles:
+    - Multiple encodings: UTF-8, Latin-1, CP1252, ISO-8859-1, Windows-1252
+    - Multiple delimiters: semicolon (;), comma (,), tab (\\t)
+    - Case-insensitive header matching
+    - Whitespace trimming
+    
+    If headers are missing or invalid, the upload is rejected with HTTP 400 before
+    any file is uploaded to S3 or message is sent to SQS.
     
     Args:
         request: FastAPI request object (for request_id)
@@ -138,7 +158,7 @@ async def upload_csv(
         UploadResponse with job_id, message, filename, and total_rows
         
     Raises:
-        HTTPException 400: If file validation fails
+        HTTPException 400: If file validation fails (missing headers, invalid format, etc.)
         HTTPException 401: If authentication fails
         HTTPException 403: If user doesn't belong to "uploader" group
         HTTPException 409: If file was already imported (duplicate)
